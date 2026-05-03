@@ -138,7 +138,19 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
 	/**
      * Update helper.
      */
-	private void update_rules(Host host) {}
+	private void update_rules(Host host) // temp
+	{
+		if (host != null && host.getIPv4Address() != null && host.isAttachedToSwitch())
+		{
+			Map<Long, Integer> nextPort = this.shortest_path_bellman_ford(
+					host.getSwitch().getId(),
+					this.getSwitches(),
+					this.getLinks()
+					);
+
+			nextPort.put(host.getSwitch().getId(), host.getPort());
+		}
+	}
 
     /**
      * Remove helper.
@@ -168,6 +180,53 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
 				}
 			}
 		}
+	}
+
+	private Map<Long, Integer> shortest_path_bellman_ford(
+        Long dstSwitchId,
+        Map<Long, IOFSwitch> switches,
+        Collection<Link> links)
+	{
+		Map<Long, Integer> nextPort = new HashMap<Long, Integer>();
+		Map<Long, Integer> dist = new HashMap<Long, Integer>();
+
+		int INF = 1000000;
+		int weight = 1;   // not sure if true, verify latter
+
+		for (Long switchId : switches.keySet())
+		{
+			dist.put(switchId, INF);
+		}
+
+		dist.put(dstSwitchId, 0);
+
+		for (int i = 0; i < switches.size() - 1; i++)
+		{
+			for (Link link : links)
+			{
+				Long src = link.getSrc();
+				Long dst = link.getDst();
+
+				if (!switches.containsKey(src) || !switches.containsKey(dst))
+				{
+					continue;
+				}
+
+				if (dist.get(src) + weight < dist.get(dst))
+				{
+					dist.put(dst, dist.get(src) + weight);
+					nextPort.put(dst, link.getDstPort());
+				}
+
+				if (dist.get(dst) + weight < dist.get(src))
+				{
+					dist.put(src, dist.get(dst) + weight);
+					nextPort.put(src, link.getSrcPort());
+				}
+			}
+		}
+
+		return nextPort;
 	}
 
     /**
