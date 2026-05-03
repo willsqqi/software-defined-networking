@@ -13,6 +13,10 @@ import org.slf4j.LoggerFactory;
 
 import edu.brown.cs.sdn.apps.util.Host;
 
+import edu.brown.cs.sdn.apps.util.SwitchCommands;
+import net.floodlightcontroller.packet.Ethernet;
+import org.openflow.protocol.OFMatch;
+
 import net.floodlightcontroller.core.IFloodlightProviderService;
 import net.floodlightcontroller.core.IOFSwitch;
 import net.floodlightcontroller.core.IOFSwitch.PortChangeType;
@@ -139,7 +143,32 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
     /**
      * Remove helper.
      */
-	private void remove_rules(Host host) {}
+	private void remove_rules(Host host)
+	{
+		if (host != null)
+		{
+			Integer hostIp = host.getIPv4Address();
+
+			if (hostIp != null)
+			{
+				OFMatch match = new OFMatch();
+				match.setDataLayerType(Ethernet.TYPE_IPv4);
+				match.setNetworkDestination(OFMatch.ETH_TYPE_IPV4, hostIp);
+
+				Map<Long, IOFSwitch> switches = this.getSwitches();
+
+				for (Long switchId : switches.keySet())
+				{
+					IOFSwitch sw = switches.get(switchId);
+
+					if (sw != null)
+					{
+						SwitchCommands.removeRules(sw, this.table, match);
+					}
+				}
+			}
+		}
+	}
 
     /**
      * Event handler called when a host joins the network.
