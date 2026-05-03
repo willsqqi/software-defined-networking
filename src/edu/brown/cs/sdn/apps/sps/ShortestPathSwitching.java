@@ -16,6 +16,7 @@ import edu.brown.cs.sdn.apps.util.Host;
 import edu.brown.cs.sdn.apps.util.SwitchCommands;
 import net.floodlightcontroller.packet.Ethernet;
 import org.openflow.protocol.OFMatch;
+import org.openflow.protocol.OFPort;
 
 import org.openflow.protocol.action.OFAction;
 import org.openflow.protocol.action.OFActionOutput;
@@ -128,11 +129,52 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
     private Collection<Link> getLinks()
     { return linkDiscProv.getLinks().keySet(); }
 
+	/**
+     * fix: install table-miss rule so unknown packets are sent to the controller.
+     */
+	private void install_table_miss(IOFSwitch sw)
+	{
+		if (sw == null)
+		{
+			return;
+		}
+
+		OFMatch match = new OFMatch();
+
+		OFAction action = new OFActionOutput(OFPort.OFPP_CONTROLLER.getValue());
+		OFInstruction instruction =
+				new OFInstructionApplyActions(Arrays.asList(action));
+
+		SwitchCommands.installRule(
+				sw,
+				this.table,
+				(short)0,
+				match,
+				Arrays.asList(instruction));
+	}
+
+	/**
+     * fix: refresh known hosts from Floodlight device manager.
+     */
+	private void refresh_known_hosts()
+	{
+		for (IDevice device : this.deviceProv.getAllDevices())
+		{
+			Host host = new Host(device, this.floodlightProv);
+
+			if (host.getIPv4Address() != null && host.isAttachedToSwitch())
+			{
+				this.knownHosts.put(device, host);
+			}
+		}
+	}
+
     /**
      * Recompute helper.
      */
 	private void compute_rules()
 	{
+		this.refresh_known_hosts();
 		for (Host host : this.getHosts())
 		{
 			this.remove_rules(host);
@@ -344,6 +386,7 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
 		
 		/*********************************************************************/
 		/* TODO: Update routing: change routing rules for all hosts          */
+		this.install_table_miss(sw);
 		this.compute_rules();
 		/*********************************************************************/
 	}
