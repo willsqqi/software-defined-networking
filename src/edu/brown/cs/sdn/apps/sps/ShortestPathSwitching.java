@@ -17,6 +17,11 @@ import edu.brown.cs.sdn.apps.util.SwitchCommands;
 import net.floodlightcontroller.packet.Ethernet;
 import org.openflow.protocol.OFMatch;
 
+import org.openflow.protocol.action.OFAction;
+import org.openflow.protocol.action.OFActionOutput;
+import org.openflow.protocol.instruction.OFInstruction;
+import org.openflow.protocol.instruction.OFInstructionApplyActions;
+
 import net.floodlightcontroller.core.IFloodlightProviderService;
 import net.floodlightcontroller.core.IOFSwitch;
 import net.floodlightcontroller.core.IOFSwitch.PortChangeType;
@@ -149,6 +154,30 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
 					);
 
 			nextPort.put(host.getSwitch().getId(), host.getPort());
+
+			OFMatch match = new OFMatch();
+			match.setDataLayerType(Ethernet.TYPE_IPv4);
+			match.setNetworkDestination(OFMatch.ETH_TYPE_IPV4, host.getIPv4Address());
+
+			for (Long switchId : nextPort.keySet())
+			{
+				IOFSwitch sw = this.getSwitches().get(switchId);
+
+				if (sw != null)
+				{
+					Integer port = nextPort.get(switchId);
+
+					OFAction action = new OFActionOutput(port.shortValue());
+					OFInstruction instruction = new OFInstructionApplyActions(Arrays.asList(action));
+
+					SwitchCommands.installRule(
+							sw,
+							this.table,
+							SwitchCommands.DEFAULT_PRIORITY,
+							match,
+							Arrays.asList(instruction));
+				}
+			}
 		}
 	}
 
