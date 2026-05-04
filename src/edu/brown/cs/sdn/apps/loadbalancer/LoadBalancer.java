@@ -282,8 +282,9 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 					forward_actions.add(new OFActionSetField(OFOXMFieldType.ETH_DST, host_mac));
 
 					OFInstruction forward_instruction = new OFInstructionApplyActions(forward_actions);
+					OFInstruction forward_goto_instruction = new OFInstructionGotoTable(spsApp.getTable());
 
-					SwitchCommands.installRule(sw, table, SwitchCommands.DEFAULT_PRIORITY, forward_match, Arrays.asList(forward_instruction), SwitchCommands.NO_TIMEOUT, IDLE_TIMEOUT);
+					SwitchCommands.installRule(sw, table, (short)(SwitchCommands.DEFAULT_PRIORITY + 1), forward_match, Arrays.asList(forward_instruction, forward_goto_instruction), SwitchCommands.NO_TIMEOUT, IDLE_TIMEOUT);
 
 					// virtual IP to client
 					OFMatch reverse_match = new OFMatch();
@@ -299,8 +300,9 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 					reverse_actions.add(new OFActionSetField(OFOXMFieldType.ETH_SRC, instance.getVirtualMAC()));
 
 					OFInstruction reverse_instruction = new OFInstructionApplyActions(reverse_actions);
+					OFInstruction reverse_goto_instruction = new OFInstructionGotoTable(spsApp.getTable());
 
-					SwitchCommands.installRule(sw, table, SwitchCommands.DEFAULT_PRIORITY, reverse_match, Arrays.asList(reverse_instruction), SwitchCommands.NO_TIMEOUT, IDLE_TIMEOUT);
+					SwitchCommands.installRule(sw, table, (short)(SwitchCommands.DEFAULT_PRIORITY + 1), reverse_match, Arrays.asList(reverse_instruction, reverse_goto_instruction), SwitchCommands.NO_TIMEOUT, IDLE_TIMEOUT);
 
 					return Command.STOP;
 				}
