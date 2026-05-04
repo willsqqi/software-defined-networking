@@ -6,14 +6,26 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 
+import java.util.Arrays;
+
 import org.openflow.protocol.OFMessage;
 import org.openflow.protocol.OFPacketIn;
 import org.openflow.protocol.OFType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.openflow.protocol.OFMatch;
+import org.openflow.protocol.OFPort;
+import org.openflow.protocol.action.OFAction;
+import org.openflow.protocol.action.OFActionOutput;
+import org.openflow.protocol.instruction.OFInstruction;
+import org.openflow.protocol.instruction.OFInstructionApplyActions;
+import org.openflow.protocol.instruction.OFInstructionGotoTable;
+
 import edu.brown.cs.sdn.apps.l3routing.IL3Routing;
 import edu.brown.cs.sdn.apps.util.ArpServer;
+
+import edu.brown.cs.sdn.apps.util.SwitchCommands;
 
 import net.floodlightcontroller.core.FloodlightContext;
 import net.floodlightcontroller.core.IFloodlightProviderService;
@@ -133,7 +145,30 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 		/*       balancer IP to the controller                               */
 		/*       (2) ARP packets to the controller, and                      */
 		/*       (3) all other packets to the next rule table in the switch  */
-		
+		if (sw != null)
+		{
+			OFAction controller_action = new OFActionOutput(OFPort.OFPP_CONTROLLER.getValue());
+			OFInstruction controller_instruction = new OFInstructionApplyActions(Arrays.asList(controller_action));
+
+			// (1) 
+			for (Integer virtual_ip : instances.keySet())
+			{
+				OFMatch virtual_ip_match = new OFMatch()
+						.setDataLayerType(Ethernet.TYPE_IPv4)
+						.setNetworkDestination(OFMatch.ETH_TYPE_IPV4, virtual_ip);
+
+				SwitchCommands.installRule(sw, table, SwitchCommands.DEFAULT_PRIORITY, virtual_ip_match, Arrays.asList(controller_instruction));
+			}
+
+			// (2) 
+			OFMatch arp_match = new OFMatch().setDataLayerType(Ethernet.TYPE_ARP);
+			SwitchCommands.installRule(sw, table, SwitchCommands.DEFAULT_PRIORITY, arp_match, Arrays.asList(controller_instruction));
+
+			// (3) 
+			OFMatch default_match = new OFMatch();
+			OFInstruction goto_instruction = new OFInstructionGotoTable(l3RoutingApp.getTable());
+			SwitchCommands.installRule(sw, table, (short)0, default_match, Arrays.asList(goto_instruction));
+		}
 		/*********************************************************************/
 	}
 	
