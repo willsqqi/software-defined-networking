@@ -22,8 +22,11 @@ import org.openflow.protocol.action.OFActionOutput;
 import org.openflow.protocol.instruction.OFInstruction;
 import org.openflow.protocol.instruction.OFInstructionApplyActions;
 import org.openflow.protocol.instruction.OFInstructionGotoTable;
+import org.openflow.protocol.OFOXMFieldType; 
+import org.openflow.protocol.action.OFActionSetField;
 
-import net.floodlightcontroller.packet.IPv4;//add
+import net.floodlightcontroller.packet.TCP;//add
+import net.floodlightcontroller.packet.IPv4;
 import net.floodlightcontroller.packet.ARP; 
 import org.openflow.protocol.OFPacketOut;
 import org.openflow.protocol.action.OFActionOutput;
@@ -246,8 +249,62 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 				return Command.STOP;
 			}
 		}
+
+		if (ethPkt.getEtherType() == Ethernet.TYPE_IPv4 && ((IPv4) ethPkt.getPayload()).getProtocol() == IPv4.PROTOCOL_TCP)
+		{
+			IPv4 ip_payload = (IPv4) ethPkt.getPayload();
+			TCP tcp_payload = (TCP) ip_payload.getPayload();
+			int destination_ip = ip_payload.getDestinationAddress();
+
+			if (instances.containsKey(destination_ip) && (tcp_payload.getFlags() & TCP_FLAG_SYN) != 0)
+			{
+				LoadBalancerInstance instance = instances.get(destination_ip);
+
+				int host_ip = instance.getNextHostIP();
+				byte[] host_mac = getHostMACAddress(host_ip);
+
+				if (host_mac != null)
+				{
+					//client to virtual IP
+					OFMatch forward_match = new OFMatch();
+					forward_match.setDataLayerType(Ethernet.TYPE_IPv4);
+					forward_match.setNetworkProtocol(IPv4.PROTOCOL_TCP);
+					forward_match.setNetworkSource(ip_payload.getSourceAddress());
+					forward_match.setNetworkDestination(OFMatch.ETH_TYPE_IPV4, destination_ip);
+					forward_match.setTransportSource(tcp_payload.getSourcePort());
+					forward_match.setTransportDestination(tcp_payload.getDestinationPort());
+
+					ArrayList<OFAction> forward_actions = new ArrayList<OFAction>();
+					forward_actions.add(new OFActionSetField(OFOXMFieldType.IPV4_DST, host_ip));
+					forward_actions.add(new OFActionSetField(OFOXMFieldType.ETH_DST, host_mac));
+
+					OFInstruction forward_instruction = new OFInstructionApplyActions(forward_actions);
+
+					SwitchCommands.installRule(sw, table, SwitchCommands.DEFAULT_PRIORITY, forward_match, Arrays.asList(forward_instruction), SwitchCommands.NO_TIMEOUT, IDLE_TIMEOUT);
+
+					// virtual IP to client
+					OFMatch reverse_match = new OFMatch();
+					reverse_match.setDataLayerType(Ethernet.TYPE_IPv4);
+					reverse_match.setNetworkProtocol(IPv4.PROTOCOL_TCP);
+					reverse_match.setNetworkSource(host_ip);
+					reverse_match.setNetworkDestination(OFMatch.ETH_TYPE_IPV4, ip_payload.getSourceAddress());
+					reverse_match.setTransportSource(tcp_payload.getDestinationPort());
+					reverse_match.setTransportDestination(tcp_payload.getSourcePort());
+
+					ArrayList<OFAction> reverse_actions = new ArrayList<OFAction>();
+					reverse_actions.add(new OFActionSetField(OFOXMFieldType.IPV4_SRC, destination_ip));
+					reverse_actions.add(new OFActionSetField(OFOXMFieldType.ETH_SRC, instance.getVirtualMAC()));
+
+					OFInstruction reverse_instruction = new OFInstructionApplyActions(reverse_actions);
+
+					SwitchCommands.installRule(sw, table, SwitchCommands.DEFAULT_PRIORITY, reverse_match, Arrays.asList(reverse_instruction), SwitchCommands.NO_TIMEOUT, IDLE_TIMEOUT);
+
+					return Command.STOP;
+				}
+			}
+		}
+
 		/*********************************************************************/
-		
 		return Command.CONTINUE;
 	}
 	
