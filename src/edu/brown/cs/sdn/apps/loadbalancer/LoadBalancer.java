@@ -303,7 +303,13 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 				}
 			}
 		}
+		if (ethPkt.getEtherType() == Ethernet.TYPE_IPv4 && ((IPv4) ethPkt.getPayload()).getProtocol() == IPv4.PROTOCOL_TCP) // other packets
+		{
+			IPv4 ip_payload = (IPv4) ethPkt.getPayload();
+			int destination_ip = ip_payload.getDestinationAddress();
 
+			if (instances.containsKey(destination_ip)) { return Command.STOP; }
+		}
 		/*********************************************************************/
 		return Command.CONTINUE;
 	}
