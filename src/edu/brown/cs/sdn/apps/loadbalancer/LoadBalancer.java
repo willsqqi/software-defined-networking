@@ -1,12 +1,13 @@
 package edu.brown.cs.sdn.apps.loadbalancer;
 
+import java.io.IOException; //add
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 
-import java.util.Arrays;
+import java.util.Arrays; //add
 
 import org.openflow.protocol.OFMessage;
 import org.openflow.protocol.OFPacketIn;
@@ -14,7 +15,7 @@ import org.openflow.protocol.OFType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.openflow.protocol.OFMatch;
+import org.openflow.protocol.OFMatch; //add
 import org.openflow.protocol.OFPort;
 import org.openflow.protocol.action.OFAction;
 import org.openflow.protocol.action.OFActionOutput;
@@ -22,10 +23,15 @@ import org.openflow.protocol.instruction.OFInstruction;
 import org.openflow.protocol.instruction.OFInstructionApplyActions;
 import org.openflow.protocol.instruction.OFInstructionGotoTable;
 
+import net.floodlightcontroller.packet.IPv4;//add
+import net.floodlightcontroller.packet.ARP; 
+import org.openflow.protocol.OFPacketOut;
+import org.openflow.protocol.action.OFActionOutput;
+
 import edu.brown.cs.sdn.apps.l3routing.IL3Routing;
 import edu.brown.cs.sdn.apps.util.ArpServer;
 
-import edu.brown.cs.sdn.apps.util.SwitchCommands;
+import edu.brown.cs.sdn.apps.util.SwitchCommands; //add
 
 import net.floodlightcontroller.core.FloodlightContext;
 import net.floodlightcontroller.core.IFloodlightProviderService;
@@ -199,7 +205,47 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 		/*       connection-specific rules to rewrite IP and MAC addresses;  */
 		/*       for all other TCP packets sent to a virtual IP, send a TCP  */
 		/*       reset; ignore all other packets                             */
-		
+		if (ethPkt.getEtherType() == Ethernet.TYPE_ARP && ((ARP) ethPkt.getPayload()).getOpCode() == ARP.OP_REQUEST) // only reply arp request
+		{
+			ARP arp_payload = (ARP) ethPkt.getPayload();
+			int target_ip = IPv4.toIPv4Address(arp_payload.getTargetProtocolAddress());
+
+			if (instances.containsKey(target_ip))
+			{
+				LoadBalancerInstance instance = instances.get(target_ip);
+				// create arp reply
+				Ethernet arp_reply = new Ethernet()
+						.setSourceMACAddress(instance.getVirtualMAC())
+						.setDestinationMACAddress(arp_payload.getSenderHardwareAddress())
+						.setEtherType(Ethernet.TYPE_ARP);
+
+				ARP arp_reply_payload = new ARP()
+						.setHardwareType(ARP.HW_TYPE_ETHERNET)
+						.setProtocolType(ARP.PROTO_TYPE_IP)
+						.setHardwareAddressLength((byte) 6)
+						.setProtocolAddressLength((byte) 4)
+						.setOpCode(ARP.OP_REPLY)
+						.setSenderHardwareAddress(instance.getVirtualMAC())
+						.setSenderProtocolAddress(arp_payload.getTargetProtocolAddress())
+						.setTargetHardwareAddress(arp_payload.getSenderHardwareAddress())
+						.setTargetProtocolAddress(arp_payload.getSenderProtocolAddress());
+
+				arp_reply.setPayload(arp_reply_payload);
+
+				OFAction out_action = new OFActionOutput(pktIn.getInPort());
+
+				OFPacketOut packet_out = new OFPacketOut();
+				packet_out.setPacketData(arp_reply.serialize());
+				packet_out.setActions(Arrays.asList(out_action));
+				packet_out.setActionsLength((short) OFActionOutput.MINIMUM_LENGTH);
+				packet_out.setLength((short) (OFPacketOut.MINIMUM_LENGTH + packet_out.getActionsLength() + arp_reply.serialize().length));
+
+				try { sw.write(packet_out, null); }
+				catch (IOException e) { log.error("Failed to send ARP reply packet-out on switch {}", sw.getId(), e); }
+
+				return Command.STOP;
+			}
+		}
 		/*********************************************************************/
 		
 		return Command.CONTINUE;
