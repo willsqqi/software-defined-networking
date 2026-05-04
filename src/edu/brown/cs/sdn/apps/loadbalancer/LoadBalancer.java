@@ -31,7 +31,7 @@ import net.floodlightcontroller.packet.ARP;
 import org.openflow.protocol.OFPacketOut;
 import org.openflow.protocol.action.OFActionOutput;
 
-import edu.brown.cs.sdn.apps.l3routing.IL3Routing;
+import edu.brown.cs.sdn.apps.sps.InterfaceShortestPathSwitching;
 import edu.brown.cs.sdn.apps.util.ArpServer;
 
 import edu.brown.cs.sdn.apps.util.SwitchCommands; //add
@@ -71,8 +71,8 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
     // Interface to device manager service
     private IDeviceService deviceProv;
     
-    // Interface to L3Routing application
-    private IL3Routing l3RoutingApp;
+	// Interface to shortest path switching application
+	private InterfaceShortestPathSwitching spsApp;
     
     // Switch table in which rules should be installed
     private byte table;
@@ -113,7 +113,7 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 		this.floodlightProv = context.getServiceImpl(
 				IFloodlightProviderService.class);
         this.deviceProv = context.getServiceImpl(IDeviceService.class);
-        this.l3RoutingApp = context.getServiceImpl(IL3Routing.class);
+		this.spsApp = context.getServiceImpl(InterfaceShortestPathSwitching.class);
         
         /*********************************************************************/
         /* TODO: Initialize other class variables, if necessary              */
@@ -175,7 +175,7 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 
 			// (3) 
 			OFMatch default_match = new OFMatch();
-			OFInstruction goto_instruction = new OFInstructionGotoTable(l3RoutingApp.getTable());
+			OFInstruction goto_instruction = new OFInstructionGotoTable(spsApp.getTable());
 			SwitchCommands.installRule(sw, table, (short)0, default_match, Arrays.asList(goto_instruction));
 		}
 		/*********************************************************************/
@@ -237,7 +237,10 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 
 				OFAction out_action = new OFActionOutput(pktIn.getInPort());
 
+				byte[] arp_reply_data = arp_reply.serialize();
+
 				OFPacketOut packet_out = new OFPacketOut();
+				packet_out.setBufferId(OFPacketOut.BUFFER_ID_NONE);
 				packet_out.setPacketData(arp_reply.serialize());
 				packet_out.setActions(Arrays.asList(out_action));
 				packet_out.setActionsLength((short) OFActionOutput.MINIMUM_LENGTH);
@@ -391,6 +394,7 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 	            new ArrayList<Class<? extends IFloodlightService>>();
         floodlightService.add(IFloodlightProviderService.class);
         floodlightService.add(IDeviceService.class);
+	floodlightService.add(InterfaceShortestPathSwitching.class);
         return floodlightService;
 	}
 
