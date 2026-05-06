@@ -4,9 +4,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.LinkedList;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,6 +65,181 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
     
     // Map of hosts to devices
     private Map<IDevice,Host> knownHosts;
+
+
+	// Helper: build spanning tree ports for broadcast flooding without loops.
+
+	private Map<Long, Set<Integer>> build_spanning_tree_ports()
+	{
+		Map<Long, Set<Integer>> treePorts = new HashMap<Long, Set<Integer>>();
+		Map<Long, IOFSwitch> switches = this.getSwitches();
+		Collection<Link> links = this.getLinks();
+
+		if (switches.isEmpty())
+		{
+			return treePorts;
+		}
+
+		Long root = switches.keySet().iterator().next();
+
+		Set<Long> visited = new HashSet<Long>();
+		Queue<Long> queue = new LinkedList<Long>();
+
+		visited.add(root);
+		queue.add(root);
+
+		while (!queue.isEmpty())
+		{
+			Long current = queue.poll();
+
+			for (Link link : links)
+			{
+				Long neighbor = null;
+				Integer currentOutPort = null;
+				Integer neighborOutPort = null;
+
+				if (link.getSrc() == current.longValue())
+				{
+					neighbor = link.getDst();
+					currentOutPort = link.getSrcPort();
+					neighborOutPort = link.getDstPort();
+				}
+				else if (link.getDst() == current.longValue())
+				{
+					neighbor = link.getSrc();
+					currentOutPort = link.getDstPort();
+					neighborOutPort = link.getSrcPort();
+				}
+				else
+				{
+					continue;
+				}
+
+				if (!switches.containsKey(neighbor) || visited.contains(neighbor))
+				{
+					continue;
+				}
+
+				if (!treePorts.containsKey(current))
+				{
+					treePorts.put(current, new HashSet<Integer>());
+				}
+				treePorts.get(current).add(currentOutPort);
+
+				if (!treePorts.containsKey(neighbor))
+				{
+					treePorts.put(neighbor, new HashSet<Integer>());
+				}
+				treePorts.get(neighbor).add(neighborOutPort);
+
+				visited.add(neighbor);
+				queue.add(neighbor);
+			}
+		}
+
+		return treePorts;
+	}
+
+
+	//Helper: get host ports per switch.
+
+	private Map<Long, Set<Integer>> get_host_ports()
+	{
+		Map<Long, Set<Integer>> hostPorts = new HashMap<Long, Set<Integer>>();
+		for (Host host : this.getHosts())
+		{
+			if (!host.isAttachedToSwitch()) continue;
+			Long sw = host.getSwitch().getId();
+			Integer port = host.getPort();
+			Set<Integer> ports = hostPorts.get(sw);
+			if (ports == null) { ports = new HashSet<Integer>(); hostPorts.put(sw, ports); }
+			ports.add(port);
+		}
+		return hostPorts;
+	}
+
+	//Helper: remove existing broadcast rules (match on dst ff:ff:ff:ff:ff:ff)
+	private void remove_broadcast_rules()
+	{
+		OFMatch match = new OFMatch();
+		match.setDataLayerDestination("ff:ff:ff:ff:ff:ff");
+
+		Map<Long, IOFSwitch> switches = this.getSwitches();
+		for (Long switchId : switches.keySet())
+		{
+			IOFSwitch sw = switches.get(switchId);
+			if (sw != null)
+			{
+				SwitchCommands.removeRules(sw, this.table, match);
+			}
+		}
+	}
+
+	/*
+	 * Helper: install broadcast rules only along the spanning tree and to hosts.
+	 */
+	private void install_broadcast_tree_rules()
+	{
+		Map<Long, Set<Integer>> treePorts = this.build_spanning_tree_ports();
+		Map<Long, Set<Integer>> hostPorts = this.get_host_ports();
+
+		Map<Long, IOFSwitch> switches = this.getSwitches();
+
+		for (Long switchId : switches.keySet())
+		{
+			IOFSwitch sw = switches.get(switchId);
+			if (sw == null) continue;
+
+			Set<Integer> tree = treePorts.get(switchId);
+			Set<Integer> hosts = hostPorts.get(switchId);
+
+			// union of tree and host ports
+			Set<Integer> allOut = new HashSet<Integer>();
+			if (tree != null) allOut.addAll(tree);
+			if (hosts != null) allOut.addAll(hosts);
+
+			if (allOut.isEmpty()) {
+				continue;
+			}
+
+			// for every possible incoming port (tree or host), install a rule
+			for (Integer inPort : allOut)
+			{
+				OFMatch match = new OFMatch();
+				match.setDataLayerDestination("ff:ff:ff:ff:ff:ff");
+				match.setInPort(inPort.intValue());
+
+				ArrayList<OFAction> actions = new ArrayList<OFAction>();
+
+				// output to all tree ports except inPort
+				if (tree != null)
+				{
+					for (Integer outPort : tree)
+					{
+						if (outPort.equals(inPort)) continue;
+						actions.add(new OFActionOutput(outPort.shortValue()));
+					}
+				}
+
+				// output to all host ports except inPort
+				if (hosts != null)
+				{
+					for (Integer outPort : hosts)
+					{
+						if (outPort.equals(inPort)) continue;
+						actions.add(new OFActionOutput(outPort.shortValue()));
+					}
+				}
+
+				// always send to controller for learning
+				actions.add(new OFActionOutput(OFPort.OFPP_CONTROLLER.getValue()));
+
+				OFInstruction instruction = new OFInstructionApplyActions(actions);
+
+				SwitchCommands.installRule(sw, this.table, (short)(SwitchCommands.DEFAULT_PRIORITY - 1), match, Arrays.asList(instruction));
+			}
+		}
+	}
 
 	/**
      * Loads dependencies and initializes data structures.
@@ -175,11 +354,14 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
 	private void compute_rules()
 	{
 		this.refresh_known_hosts();
+		// remove any existing broadcast-handling rules and reinstall along spanning tree
+		this.remove_broadcast_rules();
 		for (Host host : this.getHosts())
 		{
 			this.remove_rules(host);
 			this.update_rules(host);
 		}
+		this.install_broadcast_tree_rules();
 	}
 
 	/**
@@ -316,7 +498,7 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
 			
 			/*****************************************************************/
 			/* TODO: Update routing: add rules to route to new host          */
-			this.update_rules(host);
+			this.compute_rules();
 			/*****************************************************************/
 		}
 	}
@@ -342,7 +524,9 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
 		/* TODO: Update routing: remove rules to route to host               */
 		this.remove_rules(host);
 		this.knownHosts.remove(device);
+		this.compute_rules();
 		/*********************************************************************/
+
 	}
 
 	/**
@@ -369,9 +553,9 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
 		
 		/*********************************************************************/
 		/* TODO: Update routing: change rules to route to host               */
-		this.remove_rules(host);
-		this.update_rules(host);
+		this.compute_rules();
 		/*********************************************************************/
+
 	}
 	
     /**
