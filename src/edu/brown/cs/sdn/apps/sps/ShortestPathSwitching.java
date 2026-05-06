@@ -19,7 +19,9 @@ import edu.brown.cs.sdn.apps.util.Host;
 
 import edu.brown.cs.sdn.apps.util.SwitchCommands;
 import net.floodlightcontroller.packet.Ethernet;
+import net.floodlightcontroller.packet.IPv4;
 import org.openflow.protocol.OFMatch;
+import org.openflow.protocol.OFOXMFieldType;
 import org.openflow.protocol.OFPort;
 
 import org.openflow.protocol.action.OFAction;
@@ -364,43 +366,115 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
 		this.install_broadcast_tree_rules();
 	}
 
+	private void add_next_port(Map<Long, List<Integer>> nextPorts,
+        Long switchId, Integer port)
+	{
+		if (!nextPorts.containsKey(switchId))
+		{
+			nextPorts.put(switchId, new ArrayList<Integer>());
+		}
+
+		if (!nextPorts.get(switchId).contains(port))
+		{
+			nextPorts.get(switchId).add(port);
+		}
+	}
+
+	private OFMatch make_tcp_src_parity_match(Integer hostIp, short value)
+	{
+		OFMatch match = new OFMatch();
+
+		match.setDataLayerType(Ethernet.TYPE_IPv4);
+		match.setNetworkProtocol(IPv4.PROTOCOL_TCP);
+		match.setNetworkDestination(OFMatch.ETH_TYPE_IPV4, hostIp);
+
+		// Match TCP source-port parity: 0 even, 1 odd.
+		match.setField(OFOXMFieldType.TCP_SRC, value, (short)1);
+
+		return match;
+	}
+
+	private void install_output_rule(IOFSwitch sw, OFMatch match,
+        Integer port, short priority)
+	{
+		OFAction action = new OFActionOutput(port.shortValue());
+		OFInstruction instruction =
+				new OFInstructionApplyActions(Arrays.asList(action));
+
+		SwitchCommands.installRule(
+				sw,
+				this.table,
+				priority,
+				match,
+				Arrays.asList(instruction));
+	}
+
 	/**
      * Update helper.
      */
-	private void update_rules(Host host) // temp
+	private void update_rules(Host host)
 	{
-		if (host != null && host.getIPv4Address() != null && host.isAttachedToSwitch())
+		if (host == null || host.getIPv4Address() == null ||
+				!host.isAttachedToSwitch())
 		{
-			Map<Long, Integer> nextPort = this.shortest_path_bellman_ford(
-					host.getSwitch().getId(),
-					this.getSwitches(),
-					this.getLinks()
-					);
+			return;
+		}
 
-			nextPort.put(host.getSwitch().getId(), host.getPort());
+		Map<Long, List<Integer>> nextPorts =
+				this.shortest_path_ecmp_bellman_ford(
+						host.getSwitch().getId(),
+						this.getSwitches(),
+						this.getLinks());
 
-			OFMatch match = new OFMatch();
-			match.setDataLayerType(Ethernet.TYPE_IPv4);
-			match.setNetworkDestination(OFMatch.ETH_TYPE_IPV4, host.getIPv4Address());
+		this.add_next_port(nextPorts, host.getSwitch().getId(), host.getPort());
 
-			for (Long switchId : nextPort.keySet())
+		for (Long switchId : nextPorts.keySet())
+		{
+			IOFSwitch sw = this.getSwitches().get(switchId);
+			if (sw == null)
 			{
-				IOFSwitch sw = this.getSwitches().get(switchId);
+				continue;
+			}
 
-				if (sw != null)
-				{
-					Integer port = nextPort.get(switchId);
+			List<Integer> ports = nextPorts.get(switchId);
+			if (ports == null || ports.isEmpty())
+			{
+				continue;
+			}
 
-					OFAction action = new OFActionOutput(port.shortValue());
-					OFInstruction instruction = new OFInstructionApplyActions(Arrays.asList(action));
+			Integer hostIp = host.getIPv4Address();
 
-					SwitchCommands.installRule(
-							sw,
-							this.table,
-							SwitchCommands.DEFAULT_PRIORITY,
-							match,
-							Arrays.asList(instruction));
-				}
+			OFMatch baseMatch = new OFMatch();
+			baseMatch.setDataLayerType(Ethernet.TYPE_IPv4);
+			baseMatch.setNetworkDestination(OFMatch.ETH_TYPE_IPV4, hostIp);
+
+			this.install_output_rule(
+					sw,
+					baseMatch,
+					ports.get(0),
+					SwitchCommands.DEFAULT_PRIORITY);
+
+			if (ports.size() >= 2)
+			{
+				OFMatch evenMatch = this.make_tcp_src_parity_match(
+						hostIp,
+						(short)0);
+
+				OFMatch oddMatch = this.make_tcp_src_parity_match(
+						hostIp,
+						(short)1);
+
+				this.install_output_rule(
+						sw,
+						evenMatch,
+						ports.get(0),
+						(short)(SwitchCommands.DEFAULT_PRIORITY + 1));
+
+				this.install_output_rule(
+						sw,
+						oddMatch,
+						ports.get(1),
+					(short)(SwitchCommands.DEFAULT_PRIORITY + 1));
 			}
 		}
 	}
@@ -420,6 +494,9 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
 				match.setDataLayerType(Ethernet.TYPE_IPv4);
 				match.setNetworkDestination(OFMatch.ETH_TYPE_IPV4, hostIp);
 
+				OFMatch evenMatch = this.make_tcp_src_parity_match(hostIp, (short)0);
+				OFMatch oddMatch = this.make_tcp_src_parity_match(hostIp, (short)1);
+
 				Map<Long, IOFSwitch> switches = this.getSwitches();
 
 				for (Long switchId : switches.keySet())
@@ -429,22 +506,24 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
 					if (sw != null)
 					{
 						SwitchCommands.removeRules(sw, this.table, match);
+						SwitchCommands.removeRules(sw, this.table, evenMatch);
+						SwitchCommands.removeRules(sw, this.table, oddMatch);
 					}
 				}
 			}
 		}
 	}
 
-	private Map<Long, Integer> shortest_path_bellman_ford(
+	private Map<Long, List<Integer>> shortest_path_ecmp_bellman_ford(
         Long dstSwitchId,
         Map<Long, IOFSwitch> switches,
         Collection<Link> links)
 	{
-		Map<Long, Integer> nextPort = new HashMap<Long, Integer>();
+		Map<Long, List<Integer>> nextPorts = new HashMap<Long, List<Integer>>();
 		Map<Long, Integer> dist = new HashMap<Long, Integer>();
 
 		int INF = 1000000;
-		int weight = 1;   // not sure if true, verify latter
+		int weight = 1;
 
 		for (Long switchId : switches.keySet())
 		{
@@ -453,6 +532,7 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
 
 		dist.put(dstSwitchId, 0);
 
+		// First compute shortest distance to destination switch.
 		for (int i = 0; i < switches.size() - 1; i++)
 		{
 			for (Link link : links)
@@ -468,18 +548,64 @@ public class ShortestPathSwitching implements IFloodlightModule, IOFSwitchListen
 				if (dist.get(src) + weight < dist.get(dst))
 				{
 					dist.put(dst, dist.get(src) + weight);
-					nextPort.put(dst, link.getDstPort());
 				}
 
 				if (dist.get(dst) + weight < dist.get(src))
 				{
 					dist.put(src, dist.get(dst) + weight);
-					nextPort.put(src, link.getSrcPort());
 				}
 			}
 		}
 
-		return nextPort;
+		// Then collect every next-hop port that lies on a shortest path.
+		for (Long switchId : switches.keySet())
+		{
+			if (switchId.equals(dstSwitchId))
+			{
+				continue;
+			}
+
+			Integer switchDist = dist.get(switchId);
+			if (switchDist == null || switchDist >= INF)
+			{
+				continue;
+			}
+
+			for (Link link : links)
+			{
+				if (!switches.containsKey(link.getSrc()) ||
+						!switches.containsKey(link.getDst()))
+				{
+					continue;
+				}
+
+				if (link.getSrc() == switchId.longValue())
+				{
+					Long neighbor = link.getDst();
+
+					if (dist.containsKey(neighbor) &&
+							dist.get(neighbor) + weight == switchDist)
+					{
+						this.add_next_port(nextPorts, switchId,
+								link.getSrcPort());
+					}
+				}
+
+				if (link.getDst() == switchId.longValue())
+				{
+					Long neighbor = link.getSrc();
+
+					if (dist.containsKey(neighbor) &&
+							dist.get(neighbor) + weight == switchDist)
+					{
+						this.add_next_port(nextPorts, switchId,
+								link.getDstPort());
+					}
+				}
+			}
+		}
+
+		return nextPorts;
 	}
 
     /**
